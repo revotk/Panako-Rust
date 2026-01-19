@@ -13,7 +13,7 @@ use panako_core::{
     fingerprint::FingerprintGenerator, matching::{Matcher, QueryResult},
     segmentation::{segment_audio, SegmentationConfig}, transform,
 };
-use panako_fp::{FpReader, FpFile};
+use panako_fp::FpJsonFile;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -69,29 +69,24 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
 
     log::info!("Loading database from: {}", db_path.display());
 
-    // Find all .fp files in database directory
+    // Find all .json files in database directory
     let fp_files: Vec<PathBuf> = std::fs::read_dir(db_path)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("fp"))
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
         .collect();
 
-    log::info!("Found {} .fp files, loading in parallel...", fp_files.len());
+    log::info!("Found {} .json files, loading in parallel...", fp_files.len());
 
     // Load all files in parallel
     let load_start = std::time::Instant::now();
-    let loaded_files: Vec<(String, FpFile)> = fp_files
+    let loaded_files: Vec<(String, FpJsonFile)> = fp_files
         .par_iter()
         .filter_map(|path| {
             log::debug!("Loading: {}", path.display());
-            match FpReader::read(path) {
+            match FpJsonFile::load(path) {
                 Ok(fp_file) => {
-                    let identifier = path
-                        .file_stem()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_string();
+                    let identifier = fp_file.metadata.filename.clone();
                     Some((identifier, fp_file))
                 }
                 Err(e) => {
@@ -113,8 +108,9 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
     // Build matcher
     let mut matcher = Matcher::new();
     for (identifier, fp_file) in loaded_files {
-        matcher.add_fingerprints(identifier.clone(), &fp_file.fingerprints);
-        matcher.add_duration(identifier, fp_file.header.duration_ms);
+        let all_fps = fp_file.get_all_fingerprints();
+        matcher.add_fingerprints(identifier.clone(), &all_fps);
+        matcher.add_duration(identifier, fp_file.metadata.duration_ms);
     }
 
     log::info!("Processing input file: {}", input_path.display());

@@ -9,7 +9,7 @@ use panako_core::{
     fingerprint::FingerprintGenerator, segmentation::{segment_audio, should_segment, SegmentationConfig},
     transform,
 };
-use panako_fp::{FpFile, FpHeader, FpMetadata, FpWriter, SegmentationInfo, SegmentMetadata};
+use panako_fp::{FpJsonFile, FpJsonSegment, FpJsonFingerprint, SegmentationInfo, SegmentMetadata};
 use std::path::Path;
 
 #[derive(Parser, Debug)]
@@ -124,65 +124,96 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
         total_segments
     );
 
-    // Create output filename
-    let output_filename = input_path
+    // Extract filename without extension
+    let filename = input_path
         .file_stem()
         .unwrap()
         .to_str()
         .unwrap()
-        .to_string()
-        + ".fp";
+        .to_string();
+
+    // Create output filename (.json)
+    let output_filename = filename.clone() + ".json";
     let output_path = output_dir.join(output_filename);
 
-    // Prepare metadata
-    let config_json = serde_json::to_string(&config)?;
-
-    let metadata = FpMetadata {
-        algorithm_id: "PANAKO".to_string(),
-        algorithm_params: config_json.clone(),
-        original_filename: input_path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string(),
-        segmentation: segmentation_info,
-    };
-
-    // Calculate metadata size
-    let metadata_json = serde_json::to_string(&metadata)?;
-    let metadata_size = metadata_json.len() as u64;
-
-    let header = FpHeader::new(
-        metadata_size,
-        (all_fingerprints.len() * 20) as u64,
-        all_fingerprints.len() as u32,
+    // Create JSON fingerprint file
+    let mut fp_json = FpJsonFile::new(
+        input_path.to_str().unwrap().to_string(),
+        filename,
         config.sample_rate,
         audio_data.duration_ms,
         1, // mono
     );
 
-    // Convert fingerprints to tuple format
-    let fp_data: Vec<(u64, i32, i16, f32)> = all_fingerprints
-        .iter()
-        .map(|fp| (fp.hash, fp.t1, fp.f1, fp.m1))
-        .collect();
+    // Add segmentation info if applicable
+    if use_segmentation {
+        fp_json = fp_json.with_segmentation(
+            seg_config.segment_duration_s,
+            seg_config.overlap_duration_s,
+            total_segments,
+        );
+    }
 
-    let fp_file = FpFile {
-        header,
-        metadata,
-        fingerprints: fp_data,
-    };
+    // Build segments
+    if let Some(seg_info) = &segmentation_info {
+        // Multiple segments
+        for seg_meta in &seg_info.segments {
+            let start_idx = seg_meta.fingerprint_offset as usize;
+            let end_idx = start_idx + seg_meta.num_fingerprints as usize;
+            
+            let segment = FpJsonSegment {
+                segment_id: seg_meta.segment_id,
+                start_time_s: seg_meta.start_time_ms as f64 / 1000.0,
+                end_time_s: seg_meta.end_time_ms as f64 / 1000.0,
+                num_fingerprints: seg_meta.num_fingerprints as usize,
+                fingerprints: all_fingerprints[start_idx..end_idx]
+                    .iter()
+                    .map(|fp| FpJsonFingerprint {
+                        hash: fp.hash,
+                        t1: fp.t1,
+                        f1: fp.f1,
+                        m1: fp.m1,
+                    })
+                    .collect(),
+            };
+            
+            fp_json.add_segment(segment);
+        }
+    } else {
+        // Single segment
+        let end_time_s = all_fingerprints
+            .last()
+            .map(|fp| fp.t1 as f64 * 0.008)
+            .unwrap_or(audio_data.duration_ms as f64 / 1000.0);
+        
+        let segment = FpJsonSegment {
+            segment_id: 0,
+            start_time_s: 0.0,
+            end_time_s,
+            num_fingerprints: all_fingerprints.len(),
+            fingerprints: all_fingerprints
+                .iter()
+                .map(|fp| FpJsonFingerprint {
+                    hash: fp.hash,
+                    t1: fp.t1,
+                    f1: fp.f1,
+                    m1: fp.m1,
+                })
+                .collect(),
+        };
+        
+        fp_json.add_segment(segment);
+    }
 
-    // Write .fp file
-    let writer = FpWriter::new();
-    writer.write(&output_path, &fp_file)?;
+    // Save JSON file
+    fp_json.save(&output_path)?;
 
     // Print JSON output
     let mut result = serde_json::json!({
         "status": "success",
         "input_file": input_path.display().to_string(),
         "output_file": output_path.display().to_string(),
+        "format": "json",
         "num_fingerprints": all_fingerprints.len(),
         "processing_time_seconds": elapsed.as_secs_f64(),
     });
@@ -197,6 +228,7 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
 
     Ok(())
 }
+
 
 /// Process audio with segmentation (monitor mode)
 fn process_with_segmentation(
