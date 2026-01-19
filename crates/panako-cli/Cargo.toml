@@ -1,0 +1,35 @@
+[package]
+name = "panako-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+panako-core = { path = "../panako-core" }
+panako-fp = { path = "../panako-fp" }
+
+# CLI
+clap.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Utilities
+log = "0.4"
+env_logger = "0.11"
+
+# Parallelism
+rayon.workspace = true
+
+[[bin]]
+name = "fpgen"
+path = "src/bin/fpgen.rs"
+
+[[bin]]
+name = "fpmatcher"
+path = "src/bin/fpmatcher.rs"

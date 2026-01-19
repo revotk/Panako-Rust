@@ -1,0 +1,40 @@
+# Rust build artifacts
+/target/
+**/target/
+Cargo.lock
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Java (no incluir en el repositorio)
+/java/
+
+# Debug files
+*.pdb
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Environment files
+.env
+.env.local
