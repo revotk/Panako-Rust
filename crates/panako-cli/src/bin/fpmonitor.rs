@@ -15,7 +15,6 @@ use panako_core::{
 };
 use panako_fp::FpJsonFile;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -69,14 +68,19 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
 
     log::info!("Loading database from: {}", db_path.display());
 
-    // Find all .json files in database directory
+    // Find all .json and .bson files in database directory
     let fp_files: Vec<PathBuf> = std::fs::read_dir(db_path)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+        .filter(|path| {
+            path.extension()
+                .and_then(|s| s.to_str())
+                .map(|ext| ext == "json" || ext == "bson")
+                .unwrap_or(false)
+        })
         .collect();
 
-    log::info!("Found {} .json files, loading in parallel...", fp_files.len());
+    log::info!("Found {} .json/.bson files, loading in parallel...", fp_files.len());
 
     // Load all files in parallel
     let load_start = std::time::Instant::now();
@@ -84,7 +88,7 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
         .par_iter()
         .filter_map(|path| {
             log::debug!("Loading: {}", path.display());
-            match FpJsonFile::load(path) {
+            match FpJsonFile::load_auto(path) {
                 Ok(fp_file) => {
                     let identifier = fp_file.metadata.filename.clone();
                     Some((identifier, fp_file))
@@ -160,12 +164,17 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
         );
 
         // Process segment and query
-        let segment_results = process_segment_and_query(
+        let mut segment_results = process_segment_and_query(
             segment,
             &matcher,
             &config,
             input_path.to_str().unwrap(),
         )?;
+
+        // Add segment info to results
+        for res in &mut segment_results {
+            res.segment_index = Some(idx);
+        }
 
         log::info!(
             "  Segment {} found {} matches",
@@ -183,17 +192,20 @@ fn run_fpmonitor(db_dir: &str, input_file: &str) -> Result<()> {
         process_duration.as_secs_f64()
     );
 
-    // Merge overlapping detections
-    log::info!("Merging overlapping detections...");
-    let merged_results = merge_overlapping_detections(all_results);
+    // Sort results by absolute start time
+    all_results.sort_by(|a, b| {
+        let a_start = a.absolute_start.unwrap_or(a.query_start);
+        let b_start = b.absolute_start.unwrap_or(b.query_start);
+        a_start.partial_cmp(&b_start).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     log::info!(
-        "Final results: {} detections after merging",
-        merged_results.len()
+        "Final results: {} detections (per-segment reporting)",
+        all_results.len()
     );
 
     // Print results
-    print_json_results(&merged_results);
+    print_json_results(&all_results);
 
     Ok(())
 }
@@ -240,7 +252,7 @@ fn process_segment_and_query(
         .collect();
 
     // Query matcher
-    let results = matcher.query(query_path, &fp_tuples)?;
+    let results = matcher.query(query_path, &fp_tuples, config)?;
 
     // Adjust query result times (they're already absolute due to adjusted fingerprints)
     // No additional adjustment needed since we adjusted the fingerprints before querying
@@ -268,132 +280,4 @@ fn generate_fingerprints_from_audio(
     Ok(fingerprints)
 }
 
-/// Merge overlapping detections from different segments
-/// 
-/// Uses dynamic threshold based on reference duration (1/3 of duration).
-/// For detections with absolute_start difference < threshold:
-/// - Keep the one with better score
-/// - If same score, keep the first detection (chronologically)
-fn merge_overlapping_detections(results: Vec<QueryResult>) -> Vec<QueryResult> {
-    if results.is_empty() {
-        return vec![];
-    }
 
-    // Group by ref_identifier
-    let mut by_ref: HashMap<String, Vec<QueryResult>> = HashMap::new();
-
-    for result in results {
-        if let Some(ref_id) = &result.ref_identifier {
-            by_ref
-                .entry(ref_id.clone())
-                .or_insert_with(Vec::new)
-                .push(result);
-        }
-    }
-
-    let mut merged = Vec::new();
-
-    for (_, mut group) in by_ref {
-        // Sort by absolute_start (chronological order)
-        // This ensures we process detections in the order they appear in the file
-        group.sort_by(|a, b| {
-            let a_abs = a.absolute_start.unwrap_or(a.query_start);
-            let b_abs = b.absolute_start.unwrap_or(b.query_start);
-            a_abs
-                .partial_cmp(&b_abs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Deduplicate based on dynamic threshold
-        let mut i = 0;
-        while i < group.len() {
-            let current = &group[i];
-            
-            // Calculate dynamic threshold: 1/3 of reference duration
-            let ref_duration_s = if let Some(duration_ms) = current.ref_duration_ms {
-                duration_ms as f64 / 1000.0
-            } else {
-                // Fallback: use detected duration
-                current.ref_stop - current.ref_start
-            };
-            
-            let threshold = ref_duration_s / 3.0;
-            
-            log::debug!(
-                "Processing detection at {:.2}s (ref: {:?}, duration: {:.2}s, threshold: {:.2}s)",
-                current.absolute_start.unwrap_or(current.query_start),
-                current.ref_identifier,
-                ref_duration_s,
-                threshold
-            );
-
-            // Find duplicates (detections that start within threshold)
-            let mut duplicates = vec![i];
-            let current_abs_start = current.absolute_start.unwrap_or(current.query_start);
-            
-            for j in (i + 1)..group.len() {
-                let next = &group[j];
-                let next_abs_start = next.absolute_start.unwrap_or(next.query_start);
-                
-                let time_diff = (next_abs_start - current_abs_start).abs();
-                
-                if time_diff < threshold {
-                    log::debug!(
-                        "  Found potential duplicate at {:.2}s (diff: {:.2}s < {:.2}s)",
-                        next_abs_start,
-                        time_diff,
-                        threshold
-                    );
-                    duplicates.push(j);
-                } else {
-                    // Since sorted, no more duplicates possible
-                    break;
-                }
-            }
-
-            // Select best detection from duplicates
-            let best_idx = if duplicates.len() > 1 {
-                // Multiple detections within threshold - select best
-                let mut best = duplicates[0];
-                let mut best_score = group[best].score;
-                
-                for &idx in &duplicates[1..] {
-                    let score = group[idx].score;
-                    if score > best_score {
-                        best = idx;
-                        best_score = score;
-                    }
-                    // If same score, keep the first one (already in 'best')
-                }
-                
-                log::debug!(
-                    "  Selected detection at index {} with score {} (from {} duplicates)",
-                    best,
-                    best_score,
-                    duplicates.len()
-                );
-                
-                best
-            } else {
-                duplicates[0]
-            };
-
-            // Add the best detection to results
-            merged.push(group[best_idx].clone());
-
-            // Skip all duplicates
-            i = duplicates.last().unwrap() + 1;
-        }
-    }
-
-    // Sort final results by absolute_start (chronological order)
-    merged.sort_by(|a, b| {
-        let a_abs = a.absolute_start.unwrap_or(a.query_start);
-        let b_abs = b.absolute_start.unwrap_or(b.query_start);
-        a_abs
-            .partial_cmp(&b_abs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    merged
-}

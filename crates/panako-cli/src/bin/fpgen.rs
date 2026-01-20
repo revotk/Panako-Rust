@@ -5,11 +5,15 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use panako_core::{
-    audio::AudioData, config::PanakoConfig, eventpoint::EventPointExtractor,
-    fingerprint::FingerprintGenerator, segmentation::{segment_audio, should_segment, SegmentationConfig},
+    audio::AudioData,
+    config::PanakoConfig,
+    eventpoint::EventPointExtractor,
+    fingerprint::FingerprintGenerator,
+    segmentation::{segment_audio, should_segment, SegmentationConfig},
+    storage_config::{FileFormat, PanakoStorageConfig},
     transform,
 };
-use panako_fp::{FpJsonFile, FpJsonSegment, FpJsonFingerprint, SegmentationInfo, SegmentMetadata};
+use panako_fp::{FpJsonFile, FpJsonFingerprint, FpJsonSegment, SegmentationInfo, SegmentMetadata};
 use std::path::Path;
 
 #[derive(Parser, Debug)]
@@ -26,6 +30,14 @@ struct Args {
     #[arg(short, long)]
     monitor: bool,
 
+    /// Path to configuration file (TOML)
+    #[arg(short, long)]
+    config: Option<String>,
+
+    /// Override output format (json or bson)
+    #[arg(long)]
+    format: Option<String>,
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -35,8 +47,6 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logger
-    // Default: no logs (clean JSON output for parsing)
-    // Verbose: show Info level logs for debugging
     if args.verbose {
         env_logger::Builder::from_default_env()
             .filter_level(log::LevelFilter::Info)
@@ -47,13 +57,54 @@ fn main() -> Result<()> {
             .init();
     }
 
+    // Determine format from args or config
+    let mut format = FileFormat::Json; // Default
+    
+    // 1. Check config file first
+    if let Some(config_path) = &args.config {
+        if let Ok(config) = PanakoStorageConfig::load(Path::new(config_path)) {
+            format = config.storage.filesystem.format;
+        } else {
+            log::warn!("Failed to load config file, using defaults");
+        }
+    } else {
+        // Try default config.toml if exists
+        if Path::new("config.toml").exists() {
+             if let Ok(config) = PanakoStorageConfig::load(Path::new("config.toml")) {
+                format = config.storage.filesystem.format;
+            }
+        }
+    }
+
+    // 2. Override with CLI argument if provided
+    if let Some(fmt_str) = &args.format {
+        format = match fmt_str.to_lowercase().as_str() {
+            "json" => FileFormat::Json,
+            "bson" => FileFormat::Bson,
+            _ => {
+                log::warn!("Unknown format '{}', defaulting to JSON", fmt_str);
+                FileFormat::Json
+            }
+        };
+    }
+
+    // If format is Auto, default to JSON for generation (safer default)
+    if format == FileFormat::Auto {
+        format = FileFormat::Json;
+    }
+
     // Run fingerprint generation
-    run_fpgen(&args.input_audio_path, &args.output_dir, args.monitor)?;
+    run_fpgen(&args.input_audio_path, &args.output_dir, args.monitor, format)?;
 
     Ok(())
 }
 
-fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Result<()> {
+fn run_fpgen(
+    input_path: &str, 
+    output_dir: &str, 
+    use_monitor_mode: bool,
+    format: FileFormat
+) -> Result<()> {
     let input_path = Path::new(input_path);
     let output_dir = Path::new(output_dir);
 
@@ -132,12 +183,16 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
         .unwrap()
         .to_string();
 
-    // Create output filename (.json)
-    let output_filename = filename.clone() + ".json";
+    // Create output filename based on format
+    let ext = match format {
+        FileFormat::Bson => "bson",
+        _ => "json",
+    };
+    let output_filename = format!("{}.{}", filename, ext);
     let output_path = output_dir.join(output_filename);
 
-    // Create JSON fingerprint file
-    let mut fp_json = FpJsonFile::new(
+    // Create fingerprint file object
+    let mut fp_file = FpJsonFile::new(
         input_path.to_str().unwrap().to_string(),
         filename,
         config.sample_rate,
@@ -147,7 +202,7 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
 
     // Add segmentation info if applicable
     if use_segmentation {
-        fp_json = fp_json.with_segmentation(
+        fp_file = fp_file.with_segmentation(
             seg_config.segment_duration_s,
             seg_config.overlap_duration_s,
             total_segments,
@@ -177,7 +232,7 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
                     .collect(),
             };
             
-            fp_json.add_segment(segment);
+            fp_file.add_segment(segment);
         }
     } else {
         // Single segment
@@ -198,22 +253,25 @@ fn run_fpgen(input_path: &str, output_dir: &str, use_monitor_mode: bool) -> Resu
                     t1: fp.t1,
                     f1: fp.f1,
                     m1: fp.m1,
-                })
+                    })
                 .collect(),
         };
         
-        fp_json.add_segment(segment);
+        fp_file.add_segment(segment);
     }
 
-    // Save JSON file
-    fp_json.save(&output_path)?;
+    // Save file based on format
+    match format {
+        FileFormat::Bson => fp_file.save_bson(&output_path)?,
+        _ => fp_file.save(&output_path)?,
+    }
 
-    // Print JSON output
+    // Print JSON output for CLI (still returning JSON status)
     let mut result = serde_json::json!({
         "status": "success",
         "input_file": input_path.display().to_string(),
         "output_file": output_path.display().to_string(),
-        "format": "json",
+        "format": ext,
         "num_fingerprints": all_fingerprints.len(),
         "processing_time_seconds": elapsed.as_secs_f64(),
     });

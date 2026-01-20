@@ -10,12 +10,23 @@ pub mod fingerprint;
 pub mod matching;
 pub mod transform;
 pub mod segmentation;
+pub mod storage_config;
+pub mod storage_backend;
 
 pub use config::PanakoConfig;
 pub use eventpoint::{EventPoint, EventPointExtractor};
 pub use fingerprint::{Fingerprint, FingerprintGenerator};
 pub use matching::{Matcher, QueryResult};
 pub use segmentation::{segment_audio, should_segment, AudioSegment, SegmentationConfig};
+pub use storage_config::{
+    PanakoStorageConfig, StorageBackend, StorageConfig, 
+    FilesystemConfig, FileFormat, PostgresqlConfig,
+    MatchingConfig, SegmentationConfig as StorageSegmentationConfig,
+};
+pub use storage_backend::{
+    StorageBackend as StorageBackendTrait, FilesystemBackend, PostgresqlBackend,
+    FingerprintMetadata, QueryCriteria,
+};
 
 /// Generate fingerprints from audio file
 pub fn generate_fingerprints(

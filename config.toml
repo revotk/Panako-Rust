@@ -1,0 +1,31 @@
+# Panako Configuration File
+# This file configures the storage backend and other parameters
+
+[storage]
+# Backend type: "filesystem" or "postgresql"
+backend = "filesystem"
+
+# Filesystem backend configuration
+[storage.filesystem]
+base_directory = "./fingerprints"
+format = "bson"  # "json", "bson", or "auto" (auto-detect)
+
+# PostgreSQL backend configuration (only used if backend = "postgresql")
+[storage.postgresql]
+host = "localhost"
+port = 5432
+database = "panako"
+user = "panako_user"
+password = "panako_pass"
+max_connections = 10
+
+# Matching configuration
+[matching]
+min_aligned_matches = 5
+max_time_delta = 3
+max_freq_delta = 128
+
+# Segmentation configuration (for -m flag)
+[segmentation]
+segment_duration_s = 25.0
+overlap_duration_s = 5.0

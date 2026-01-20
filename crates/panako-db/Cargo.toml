@@ -1,0 +1,31 @@
+[package]
+name = "panako-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Database
+tokio-postgres.workspace = true
+deadpool-postgres.workspace = true
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+bson.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+log = "0.4"
+
+# Internal dependencies
+panako-fp = { path = "../panako-fp" }
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,10 +1,12 @@
 //! Tests for matching algorithm
 
 use super::*;
+use crate::config::PanakoConfig;
 
 #[test]
 fn test_matcher_basic() {
     let mut matcher = Matcher::new();
+    let config = PanakoConfig::default();
     
     // Create reference fingerprints in tuple format: (hash, t1, f1, m1)
     let ref_fps: Vec<(u64, i32, i16, f32)> = vec![
@@ -23,7 +25,7 @@ fn test_matcher_basic() {
     let query_fps = ref_fps.clone();
     
     let results = matcher
-        .query("test_query", &query_fps)
+        .query("test_query", &query_fps, &config)
         .unwrap();
     
     // Should find a match (we have 6 aligned matches)

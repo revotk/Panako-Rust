@@ -26,6 +26,9 @@ env_logger = "0.11"
 # Parallelism
 rayon.workspace = true
 
+# Async runtime (for migration tool)
+tokio.workspace = true
+
 [[bin]]
 name = "fpgen"
 path = "src/bin/fpgen.rs"
@@ -33,3 +36,7 @@ path = "src/bin/fpgen.rs"
 [[bin]]
 name = "fpmatcher"
 path = "src/bin/fpmatcher.rs"
+
+[[bin]]
+name = "fpmigrate"
+path = "src/bin/fpmigrate.rs"

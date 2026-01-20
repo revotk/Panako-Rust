@@ -23,10 +23,20 @@ rubato.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+async-trait.workspace = true
 
 # Error handling
 anyhow.workspace = true
 thiserror.workspace = true
+
+# Parallelism
+rayon.workspace = true
+
+# Internal dependencies
+panako-fp = { path = "../panako-fp" }
+panako-db = { path = "../panako-db" }
+deadpool-postgres.workspace = true
 
 # Utilities
 log = "0.4"

@@ -2,6 +2,7 @@
 //!
 //! Implements the Panako matching algorithm with JSON output support.
 
+use crate::config::PanakoConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,6 +46,10 @@ pub struct QueryResult {
     pub absolute_start: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absolute_end: Option<f64>,
+    
+    // NEW: Segment information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_index: Option<usize>,
 }
 
 impl QueryResult {
@@ -65,6 +70,7 @@ impl QueryResult {
             ref_duration_ms: None,
             absolute_start: None,
             absolute_end: None,
+            segment_index: None,
         }
     }
 }
@@ -121,6 +127,7 @@ impl Matcher {
         &self,
         query_path: &str,
         query_fingerprints: &[(u64, i32, i16, f32)],
+        config: &PanakoConfig,
     ) -> Result<Vec<QueryResult>> {
         // Find all matches
         let mut matches: Vec<Match> = Vec::new();
@@ -156,16 +163,17 @@ impl Matcher {
         }
         
         // Early filtering: skip identifiers with very few matches
-        const MIN_MATCH_THRESHOLD: usize = 5;
-        const MIN_ALIGNED_THRESHOLD: usize = 5;
+        // Use config values to match Java implementation
+        let min_match_threshold = config.min_hits_unfiltered;  // 10 in Java
+        let min_aligned_threshold = config.min_hits_filtered;  // 5 in Java
         
         for (identifier, id_matches) in by_identifier {
-            if id_matches.len() < MIN_MATCH_THRESHOLD {
+            if id_matches.len() < min_match_threshold {
                 log::trace!(
                     "Skipping {}: only {} raw matches (need {})",
                     identifier,
                     id_matches.len(),
-                    MIN_MATCH_THRESHOLD
+                    min_match_threshold
                 );
                 continue;
             }
@@ -183,23 +191,23 @@ impl Matcher {
                 .unwrap_or((0, 0));
             
             // Skip if best delta doesn't have enough support
-            if count < MIN_ALIGNED_THRESHOLD {
+            if count < min_aligned_threshold {
                 log::trace!(
                     "Skipping {}: best delta only has {} matches (need {})",
                     identifier,
                     count,
-                    MIN_ALIGNED_THRESHOLD
+                    min_aligned_threshold
                 );
                 continue;
             }
             
-            // Filter matches by best delta_t (allow ±2 frame tolerance)
+            // Filter matches by best delta_t (use query_range from config)
             let aligned_matches: Vec<_> = id_matches
                 .iter()
-                .filter(|m| (m.delta_t() - best_delta).abs() <= 2)
+                .filter(|m| (m.delta_t() - best_delta).abs() <= config.query_range)
                 .collect();
             
-            if aligned_matches.len() < MIN_ALIGNED_THRESHOLD {
+            if aligned_matches.len() < min_aligned_threshold {
                 continue;
             }
             
@@ -268,6 +276,7 @@ impl Matcher {
                 ref_duration_ms,
                 absolute_start,
                 absolute_end,
+                segment_index: None, // Filled by caller if applicable
             });
         }
         
